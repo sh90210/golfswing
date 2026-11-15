@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Golf Swing</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="mirror">
+  <main id="stage">
+    <video id="preview" autoplay playsinline muted></video>
+    <video id="playback" playsinline muted></video>
+
+    <div id="progress"><div id="progressFill"></div></div>
+
+    <header id="topbar">
+      <div id="status" class="pill">Ready</div>
+      <div class="top-right">
+        <div id="swingCount" class="pill hidden">Swing 0</div>
+        <button id="settingsBtn" class="icon-btn" aria-label="Settings">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div id="countdown" class="hidden"></div>
+
+    <div id="message" class="hidden">
+      <p id="messageText"></p>
+      <button id="retryBtn" class="text-btn">Enable camera</button>
+    </div>
+
+    <footer id="controls">
+      <button id="mainBtn" class="main-btn" aria-label="Start">
+        <span class="inner"></span>
+      </button>
+      <div id="hint">Tap to start</div>
+    </footer>
+  </main>
+
+  <section id="settings" class="sheet hidden" aria-label="Settings">
+    <div class="sheet-header">
+      <h2>Settings</h2>
+      <button id="closeSettings" class="text-btn">Done</button>
+    </div>
+    <div class="sheet-body">
+      <h3>Timing</h3>
+      <div class="group">
+      <div class="row" data-key="countdown" data-min="0" data-max="10" data-step="1" data-unit="s">
+        <span class="label">Countdown</span>
+        <div class="stepper"><button class="dec">−</button><span class="val"></span><button class="inc">+</button></div>
+      </div>
+      <div class="row" data-key="record" data-min="1" data-max="10" data-step="0.5" data-unit="s">
+        <span class="label">Recording length</span>
+        <div class="stepper"><button class="dec">−</button><span class="val"></span><button class="inc">+</button></div>
+      </div>
+      <div class="row" data-key="replays" data-min="1" data-max="5" data-step="1" data-unit="×">
+        <span class="label">Replays</span>
+        <div class="stepper"><button class="dec">−</button><span class="val"></span><button class="inc">+</button></div>
+      </div>
+      <div class="row" data-key="gap" data-min="0" data-max="5" data-step="0.5" data-unit="s">
+        <span class="label">Pause between replays</span>
+        <div class="stepper"><button class="dec">−</button><span class="val"></span><button class="inc">+</button></div>
+      </div>
+      </div>
+
+
+      <h3>Slow motion</h3>
+      <div class="group">
+      <div class="row col">
+        <span class="label">Slow-mo replays</span>
+        <div class="seg" data-key="slowmo">
+          <button data-v="off">Off</button><button data-v="last">Last replay</button><button data-v="all">All</button>
+        </div>
+      </div>
+      <div class="row col">
+        <span class="label">Slow-mo speed</span>
+        <div class="seg" data-key="slowSpeed">
+          <button data-v="0.25">¼×</button><button data-v="0.5">½×</button><button data-v="0.75">¾×</button>
+        </div>
+      </div>
+      </div>
+
+
+      <h3>Camera</h3>
+      <div class="group">
+      <div class="row col">
+        <span class="label">Video quality</span>
+        <div class="seg" data-key="quality">
+          <button data-v="480">480p</button><button data-v="720">720p</button><button data-v="1080">1080p</button>
+        </div>
+      </div>
+      <div class="row col">
+        <span class="label">Frame rate</span>
+        <div class="seg" data-key="fps">
+          <button data-v="30">30 fps</button><button data-v="60">60 fps</button>
+        </div>
+      </div>
+      </div>
+      <p id="camInfo" class="note"></p>
+
+
+      <h3>Other</h3>
+      <div class="group">
+      <div class="row">
+        <span class="label">Mirror video</span>
+        <label class="switch"><input type="checkbox" data-key="mirror"><span></span></label>
+      </div>
+      <div class="row">
+        <span class="label">Countdown beeps</span>
+        <label class="switch"><input type="checkbox" data-key="beeps"><span></span></label>
+      </div>
+      </div>
+
+      <button id="resetBtn" class="reset-btn">Reset to defaults</button>
+      <p class="note">Videos stay on your phone and are replaced by each new swing.</p>
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
