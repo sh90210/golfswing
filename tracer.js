@@ -270,7 +270,9 @@
     }
   }
 
-  // Hands still → moving fast → still again. Returns { start, end } in seconds.
+  // Find the swing from the hands: address (low, still) → top (highest) → impact (fastest, low again).
+  // The backswing can be slow and the hands pause at the top, so the start is found by
+  // position (hands leave the address spot), not by speed.
   function findSwingWindow(frames) {
     const pts = frames.filter((f) => f.P);
     if (pts.length < 5) return null;
@@ -279,10 +281,25 @@
     let iMax = 0;
     sp.forEach((s, i) => { if (s > sp[iMax]) iMax = i; });
     if (sp[iMax] < 0.8) return null; // nobody swung (hands moved < 0.8 torso lengths per second)
-    let iS = iMax;
-    while (iS > 0 && sp[iS] > 0.12 * sp[iMax]) iS--;
-    // The takeaway can be slow: keep walking back while the hands are still moving a little.
-    while (iS > 0 && sp[iS] > 0.25) iS--;
+    // Top of the backswing: hands highest in the 1.5 s before the fastest moment.
+    let iTop = iMax;
+    for (let i = iMax; i >= 0 && pts[iMax].t - pts[i].t <= 1.5; i--) if (pts[i].P.hy < pts[iTop].P.hy) iTop = i;
+    // Address: hands lowest in the 3 s before the top.
+    let iLow = iTop;
+    for (let i = iTop; i >= 0 && pts[iTop].t - pts[i].t <= 3; i--) if (pts[i].P.hy > pts[iLow].P.hy) iLow = i;
+    let iS;
+    if (pts[iLow].P.hy - pts[iTop].P.hy > 0.5 * S) {
+      // Takeaway = last moment before the top when the hands were still at the address spot
+      // (the club head starts moving before the hands visibly do, so step one sample earlier).
+      iS = iLow;
+      for (let i = iTop; i >= iLow; i--) {
+        if (Math.hypot(pts[i].P.hx - pts[iLow].P.hx, pts[i].P.hy - pts[iLow].P.hy) < 0.08 * S) { iS = Math.max(iLow, i - 1); break; }
+      }
+    } else {
+      // The recording started mid-swing: fall back to "when the hands started moving".
+      iS = iMax;
+      while (iS > 0 && sp[iS] > 0.25) iS--;
+    }
     let iE = iMax;
     while (iE < pts.length - 1 && sp[iE] > 0.12 * sp[iMax]) iE++;
     return { start: pts[iS].t, end: pts[iE].t, S };
@@ -470,7 +487,7 @@
     }
     if (club.length < 4) return null;
     return {
-      v: 2,
+      v: 3,
       start: round(frames[iStart].t),
       top: round(frames[iTop].t),
       impact: round(frames[iImp].t),
@@ -553,7 +570,7 @@
 
   // Keep a canvas overlay in sync with a playing video. Returns a detach function.
   function attach(canvas, video, trace) {
-    if (!trace || trace.v !== 2) return () => {};
+    if (!trace || trace.v !== 3) return () => {};
     let raf = 0, alive = true;
     const tick = () => {
       if (!alive) return;
@@ -578,7 +595,7 @@
     c.width = pick.canvas.width; c.height = pick.canvas.height;
     const ctx = c.getContext('2d');
     ctx.drawImage(pick.canvas, 0, 0);
-    if (trace && withTrace && trace.v === 2) drawClub(ctx, trace, { x: 0, y: 0, w: c.width, h: c.height }, Infinity, 2.5, 1);
+    if (trace && withTrace && trace.v === 3) drawClub(ctx, trace, { x: 0, y: 0, w: c.width, h: c.height }, Infinity, 2.5, 1);
     return new Promise((res) => c.toBlob((b) => res(b), 'image/jpeg', 0.78));
   }
 
@@ -596,5 +613,6 @@
     attach,
     makeThumbnail,
     _setPose,
+    _findSwingWindow: findSwingWindow,
   };
 })();
