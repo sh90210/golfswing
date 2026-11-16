@@ -1,10 +1,13 @@
 // Offline cache for the app shell. Bump VERSION when files change.
-const VERSION = 'golfswing-v1';
+const VERSION = 'golfswing-v2';
 const FILES = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './supabase.js',
+  './tracer.js',
+  './gallery.js',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
