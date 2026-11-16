@@ -22,6 +22,8 @@
   const pDur = $('pDur');
   const pLoading = $('pLoading');
   const pSpeed = $('pSpeed');
+  const pTraceBtn = $('pTraceBtn');
+  const pTraceLabel = $('pTraceLabel');
 
   let rows = [];
   let thumbUrls = {};
@@ -34,8 +36,11 @@
   let duration = 0;
   let deleteArmed = null;
   let loadToken = 0;
-  let getOpts = () => ({ hands: true, club: true });
+  let getSettings = () => ({ traceOn: true, mirror: true });
+  let setSetting = () => {};
   let onChanged = () => {};
+  let tracing = null; // { row, progress } while a saved swing is being traced
+  const mirrored = (r) => (r.facing || 'user') !== 'environment' && !!getSettings().mirror;
 
   // ---------- Dates ----------
   function dayKey(d) { return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; }
@@ -143,7 +148,7 @@
     groups.forEach((g) => {
       const grid = el('div', { class: 'grid' });
       g.items.forEach(({ r, i, d }) => {
-        const btn = el('button', { class: 'thumb', 'aria-label': `Play swing from ${timeLabel(d)}`, onclick: () => play(i) });
+        const btn = el('button', { class: `thumb${mirrored(r) ? ' mirror' : ''}`, 'aria-label': `Play swing from ${timeLabel(d)}`, onclick: () => play(i) });
         const url = r.thumb_path && thumbUrls[r.thumb_path];
         if (url) btn.appendChild(el('img', { src: url, alt: '', loading: 'lazy' }));
         btn.appendChild(el('span', { class: 'dur', text: fmt((r.duration_ms || 0) / 1000) }));
@@ -161,12 +166,15 @@
   }
 
   // ---------- Player ----------
+  let blobForTrace = null;
   async function play(index) {
     if (index < 0 || index >= rows.length) return;
     current = index;
     const r = rows[index];
     const token = ++loadToken;
     playerEl.classList.remove('hidden');
+    playerEl.classList.remove('controls-hidden');
+    playerEl.classList.toggle('mirror', mirrored(r));
     disarmDelete();
     const d = new Date(r.recorded_at);
     pLabel.textContent = `${dayTitle(d)} · ${timeLabel(d)}`;
@@ -184,6 +192,7 @@
       const res = await fetch(urls[r.video_path]);
       if (!res.ok) throw new Error('download');
       const blob = await res.blob();
+      blobForTrace = blob;
       if (token !== loadToken) return;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       objectUrl = URL.createObjectURL(blob);
@@ -201,8 +210,10 @@
     pVideo.loop = loop;
     pVideo.playbackRate = rate;
     pVideo.defaultPlaybackRate = rate;
-    startTrace(r.trace);
+    startTrace(r);
     try { await pVideo.play(); } catch (_) {}
+    // Swings saved before the new tracer (or without a trace) get traced now, once.
+    if (!(r.trace && r.trace.v === 2)) retrace(r, blobForTrace);
     pVideo.playbackRate = rate;
     updatePlayIcon();
   }
@@ -231,12 +242,50 @@
     pDur.textContent = fmt(duration);
   }
 
-  function startTrace(trace) {
+  function startTrace(r) {
     stopTrace();
-    const opts = getOpts();
-    if (trace && (opts.hands || opts.club)) detachTrace = tracer().attach(pTrace, pVideo, trace, opts);
+    if (r && r.trace && r.trace.v === 2 && getSettings().traceOn) detachTrace = tracer().attach(pTrace, pVideo, r.trace);
+    updateTraceLabel();
   }
   function stopTrace() { if (detachTrace) { detachTrace(); detachTrace = null; } }
+
+  function updateTraceLabel() {
+    const on = !!getSettings().traceOn;
+    pTraceBtn.classList.toggle('on', on);
+    pTraceBtn.setAttribute('aria-pressed', String(on));
+    const r = rows[current];
+    if (tracing && r && tracing.row === r) pTraceLabel.textContent = `Tracing ${Math.round(tracing.progress * 100)}%`;
+    else if (r && r.traceFailed) pTraceLabel.textContent = 'No trace';
+    else pTraceLabel.textContent = on ? 'Trace on' : 'Trace off';
+  }
+
+  pTraceBtn.addEventListener('click', () => {
+    setSetting('traceOn', !getSettings().traceOn);
+    startTrace(rows[current]);
+  });
+
+  async function retrace(r, blob) {
+    if (!blob || tracing) return;
+    tracing = { row: r, progress: 0 };
+    updateTraceLabel();
+    try {
+      const trace = await tracer().analyzeClip(blob, {
+        fps: 30,
+        durationSec: (r.duration_ms || 4000) / 1000,
+        onProgress: (p) => { if (tracing) { tracing.progress = p; updateTraceLabel(); } },
+        isCancelled: () => playerEl.classList.contains('hidden'),
+      });
+      if (trace) {
+        r.trace = trace;
+        cloud().updateSwing(r.id, { trace }).catch(() => {});
+      } else if (!playerEl.classList.contains('hidden')) r.traceFailed = true;
+    } catch (_) {
+      r.traceFailed = true;
+    } finally {
+      tracing = null;
+      if (rows[current] === r && !playerEl.classList.contains('hidden')) startTrace(r);
+    }
+  }
 
   function closePlayer() {
     loadToken++;
@@ -330,9 +379,19 @@
     }
   });
 
+  // Tap the video to hide/show the controls, like a normal video player.
+  const toggleControls = () => {
+    if (swiped) { swiped = false; return; }
+    playerEl.classList.toggle('controls-hidden');
+  };
+  pVideo.addEventListener('click', toggleControls);
+  pLoading.addEventListener('click', toggleControls);
+  let swiped = false;
+
   // Swipe between swings (left = older, right = newer)
   let touchX = null, touchY = null;
   playerEl.addEventListener('touchstart', (e) => {
+    swiped = false;
     if (e.target.closest('.p-panel')) { touchX = null; return; }
     touchX = e.touches[0].clientX; touchY = e.touches[0].clientY;
   }, { passive: true });
@@ -341,6 +400,7 @@
     const dx = e.changedTouches[0].clientX - touchX;
     const dy = e.changedTouches[0].clientY - touchY;
     touchX = null;
+    if (Math.abs(dx) > 25 || Math.abs(dy) > 25) swiped = true;
     if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
       if (dx < 0 && current < rows.length - 1) play(current + 1);
       if (dx > 0 && current > 0) play(current - 1);
@@ -366,7 +426,8 @@
     get playerOpen() { return !playerEl.classList.contains('hidden'); },
     closePlayer,
     configure(o) {
-      if (o.getOpts) getOpts = o.getOpts;
+      if (o.getSettings) getSettings = o.getSettings;
+      if (o.setSetting) setSetting = o.setSetting;
       if (o.onChanged) onChanged = o.onChanged;
     },
   };

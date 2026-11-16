@@ -17,8 +17,8 @@
     fps: 30,            // 30 | 60
     mirror: true,
     beeps: true,
-    traceHands: false,  // hand path trace
-    traceClub: false,   // club head trace (experimental)
+    traceOn: true,      // show the club-head trace on replays
+    facing: 'user',     // 'user' = front camera, 'environment' = back camera
   };
   const STORE_KEY = 'golfswing.settings.v2';
   const OLD_KEY = 'golfswing.settings.v1';
@@ -38,8 +38,7 @@
     try { localStorage.setItem(STORE_KEY, JSON.stringify(settings)); } catch (_) {}
   }
   let settings = loadSettings();
-  const traceOpts = () => ({ hands: !!settings.traceHands, club: !!settings.traceClub });
-  const traceOn = () => settings.traceHands || settings.traceClub;
+  const isFront = () => settings.facing !== 'environment';
 
   // ---------- Elements ----------
   const $ = (id) => document.getElementById(id);
@@ -64,16 +63,18 @@
   const galleryBtn = $('galleryBtn');
   const galleryThumb = $('galleryThumb');
   const galleryIcon = $('galleryIcon');
+  const traceBtn = $('traceBtn');
+  const flipBtn = $('flipBtn');
 
   // ---------- State ----------
   let stream = null;
   let session = null;      // { cancelled: boolean, wakers: Set<fn> }
   let recorder = null;
-  let analysis = null;
+  let sampler = null;
   let wakeLock = null;
   let audioCtx = null;
   let swingCount = 0;
-  let clip = null;         // latest recording: { blob, url, result, recordedAt, durationMs, saved, saving }
+  let clip = null;         // latest recording: { blob, url, sample, trace, tracing, recordedAt, durationMs, facing, saved, row }
   let detachTrace = null;
 
   // ---------- Helpers ----------
@@ -163,11 +164,20 @@
       stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
-          facingMode: 'user',
+          facingMode: { exact: settings.facing },
           width: { ideal: w },
           height: { ideal: h },
           frameRate: { ideal: Number(settings.fps) },
         },
+      }).catch((e) => {
+        // Some phones don't accept an exact camera choice; ask more loosely.
+        if (e && (e.name === 'OverconstrainedError' || e.name === 'NotFoundError')) {
+          return navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: { facingMode: settings.facing, width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: Number(settings.fps) } },
+          });
+        }
+        throw e;
       });
     } catch (err) {
       const denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
@@ -236,15 +246,15 @@
       rec.onstop = () => {
         recorder = null;
         const durationSec = startedAt ? (performance.now() - startedAt) / 1000 : settings.record;
-        const result = analysis ? analysis.finish(durationSec) : null;
-        analysis = null;
+        const sample = sampler ? sampler.finish(durationSec) : null;
+        sampler = null;
         const blob = chunks.length ? new Blob(chunks, { type: (rec.mimeType || mime || 'video/webm').split(';')[0] }) : null;
-        resolve(blob ? { blob, result, recordedAt, durationMs: durationSec * 1000 } : null);
+        resolve(blob ? { blob, sample, recordedAt, durationMs: durationSec * 1000, facing: settings.facing } : null);
       };
       rec.onstart = async () => {
         startedAt = performance.now();
-        // Always sample frames for the thumbnail; track the body only if a trace is on.
-        analysis = tracer.startAnalysis(preview, startedAt, traceOpts());
+        // Grab a few frames for the thumbnail (cheap). The trace is worked out after recording.
+        sampler = tracer.startSampler(preview, startedAt);
         const ms = settings.record * 1000;
         progressFill.classList.remove('run');
         void progressFill.offsetWidth; // restart animation
@@ -289,19 +299,87 @@
 
   function stopTrace() { if (detachTrace) { detachTrace(); detachTrace = null; } }
 
+  // Show the trace on the replay screen if it's ready and switched on.
+  function showTrace() {
+    stopTrace();
+    if (clip && clip.trace && settings.traceOn && body.classList.contains('replaying')) {
+      detachTrace = tracer.attach(traceCanvas, playback, clip.trace);
+    }
+  }
+
+  function updateTraceBtn() {
+    traceBtn.classList.toggle('on', !!settings.traceOn);
+    traceBtn.setAttribute('aria-pressed', String(!!settings.traceOn));
+    const label = traceBtn.querySelector('span');
+    if (clip && clip.tracing) label.textContent = `Tracing ${Math.round((clip.progress || 0) * 100)}%`;
+    else if (clip && clip.traceDone && !clip.trace) label.textContent = 'No trace';
+    else label.textContent = settings.traceOn ? 'Trace on' : 'Trace off';
+  }
+
+  traceBtn.addEventListener('click', () => {
+    settings.traceOn = !settings.traceOn;
+    saveSettings();
+    updateTraceBtn();
+    showTrace();
+  });
+
+  // Work out the club-head trace for a clip, frame by frame, in the background.
+  let tracerWarned = false;
+  function traceClip(c) {
+    c.tracing = true;
+    c.progress = 0;
+    updateTraceBtn();
+    const fps = (() => {
+      const tr = stream && stream.getVideoTracks()[0];
+      const fr = tr && tr.getSettings ? tr.getSettings().frameRate : 0;
+      return fr || Number(settings.fps) || 30;
+    })();
+    c.tracePromise = tracer.analyzeClip(c.blob, {
+      fps,
+      durationSec: c.durationMs / 1000,
+      onProgress: (p) => { c.progress = p; if (clip === c) updateTraceBtn(); },
+      isCancelled: () => c.cancelled,
+    }).then((trace) => {
+      c.trace = trace || null;
+    }).catch(() => {
+      c.trace = null;
+      if (!tracerWarned) {
+        tracerWarned = true;
+        toast('Couldn\'t load the swing tracer. It needs internet the first time.', 'err', 4000);
+      }
+    }).finally(async () => {
+      c.tracing = false;
+      c.traceDone = true;
+      if (clip === c) { updateTraceBtn(); showTrace(); }
+      // If the swing was already saved, add its trace now.
+      if (c.row && c.trace) {
+        try { await cloud.updateSwing(c.row.id, { trace: c.trace }); c.row.trace = c.trace; } catch (_) {}
+      }
+    });
+  }
+
   async function replayClip(c, s) {
     setMode('replaying');
     updateSaveButton();
-    const trace = c.result && c.result.trace;
-    if (trace && traceOn()) detachTrace = tracer.attach(traceCanvas, playback, trace, traceOpts());
-    else if (traceOn() && !trace) toast('No swing found to trace', 'err', 1800);
+    updateTraceBtn();
+    showTrace();
     const n = settings.replays;
-    for (let i = 1; i <= n && !s.cancelled; i++) {
+    // Play the set number of replays. If the trace is still being worked out, keep
+    // replaying until it's ready (up to ~25 s), so at least one replay shows it.
+    const waitUntil = performance.now() + 25000;
+    for (let i = 1; !s.cancelled; i++) {
+      const withTrace = !!(c.trace && settings.traceOn);
       const slow = settings.slowmo === 'all' || (settings.slowmo === 'last' && i === n);
       const rate = slow ? Number(settings.slowSpeed) : 1;
-      setStatus(`Replay ${i}/${n}${slow ? ' · ' + formatRate(rate) : ''}`);
+      setStatus(i <= n ? `Replay ${i}/${n}${slow ? ' · ' + formatRate(rate) : ''}` : (c.tracing ? 'Replay · tracing…' : 'Replay · with trace'));
       await playOnce(c.url, rate, s);
-      if (i < n && settings.gap > 0) await sleep(settings.gap * 1000, s);
+      if (s.cancelled) break;
+      if (i >= n) {
+        const stillTracing = c.tracing && performance.now() < waitUntil;
+        const traceJustArrived = !withTrace && c.trace && settings.traceOn;
+        if (!stillTracing && !traceJustArrived) break;
+      }
+      if (settings.gap > 0) await sleep(settings.gap * 1000, s);
     }
     stopTrace();
     setMode('idle');
@@ -328,9 +406,7 @@
     if (session || !stream) return;
     ensureAudio();
     requestWakeLock();
-    if (traceOn() && !tracer.ready) {
-      tracer.prepare().catch(() => toast('Couldn\'t load the swing tracer. It needs internet the first time.', 'err', 4000));
-    }
+    if (!tracer.ready) tracer.prepare().catch(() => {});
     const s = { cancelled: false, wakers: new Set() };
     session = s;
     body.classList.add('running');
@@ -350,10 +426,11 @@
       beep(1320, 0.3, 0.45);
       const rec = await recordClip(s);
       setMode('idle');
-      if (s.cancelled) { if (rec) setClip(rec); break; }
+      if (s.cancelled) { if (rec) { setClip(rec); traceClip(clip); } break; }
 
       if (!rec) { setStatus('Recording failed'); await sleep(1000, s); continue; }
       setClip(rec);
+      traceClip(clip);
       beep(660, 0.12, 0.25);
       await replayClip(clip, s);
     }
@@ -361,6 +438,7 @@
 
   function setClip(rec) {
     if (clip && clip.url) URL.revokeObjectURL(clip.url);
+    if (clip && clip.tracing && !clip.saved && !clip.saving) clip.cancelled = true; // nobody will see it
     clip = { ...rec, url: URL.createObjectURL(rec.blob), saved: false, saving: false };
     updateSaveButton();
   }
@@ -372,7 +450,7 @@
     [...s.wakers].forEach((fn) => fn());
     s.wakers.clear();
     if (recorder && recorder.state !== 'inactive') { try { recorder.stop(); } catch (_) {} }
-    if (analysis) { analysis.cancel(); analysis = null; }
+    if (sampler) { sampler.cancel(); sampler = null; }
     playback.pause();
     stopTrace();
     progressFill.classList.remove('run');
@@ -415,18 +493,21 @@
     c.saving = true;
     updateSaveButton();
     try {
-      const thumb = c.result ? await tracer.makeThumbnail(c.result, traceOpts()) : null;
+      const thumb = await tracer.makeThumbnail(c.sample, c.trace, true);
       const row = await cloud.saveSwing({
         video: c.blob,
         thumb,
         recordedAt: c.recordedAt,
         durationMs: c.durationMs,
-        trace: c.result && c.result.trace,
+        trace: c.trace || null,
+        facing: c.facing,
       });
+      c.row = row;
       c.saved = true;
+      // Trace still being worked out? traceClip() adds it to the saved swing when ready.
       const localThumb = thumb ? URL.createObjectURL(thumb) : null;
       gallery.addSaved(row, localThumb);
-      setGalleryThumb(localThumb, true);
+      setGalleryThumb(localThumb, true, c.facing);
       if (clip === c) toast('Saved to your swings', 'ok');
     } catch (e) {
       toast(e.auth ? 'Sign in again from Swings to save' : 'Couldn\'t save. Check your connection.', 'err', 3500);
@@ -440,7 +521,8 @@
   });
 
   // ---------- Gallery button ----------
-  function setGalleryThumb(url, fresh) {
+  function setGalleryThumb(url, fresh, facing) {
+    galleryBtn.classList.toggle('mirror', facing !== 'environment' && !!settings.mirror);
     if (url) {
       galleryThumb.src = url;
       galleryThumb.classList.remove('hidden');
@@ -460,8 +542,9 @@
   });
 
   gallery.configure({
-    getOpts: traceOpts,
-    onChanged: (latest, url) => setGalleryThumb(latest ? url : null, false),
+    getSettings: () => settings,
+    setSetting: (k, v) => { settings[k] = v; saveSettings(); updateTraceBtn(); },
+    onChanged: (latest, url) => setGalleryThumb(latest ? url : null, false, latest && latest.facing),
   });
 
   async function loadLatestThumb() {
@@ -470,7 +553,7 @@
       const latest = await cloud.latestSwing();
       if (!latest || !latest.thumb_path) { setGalleryThumb(null); return; }
       const urls = await cloud.signUrls([latest.thumb_path]);
-      setGalleryThumb(urls[latest.thumb_path] || null);
+      setGalleryThumb(urls[latest.thumb_path] || null, false, latest.facing);
     } catch (_) {}
   }
 
@@ -485,7 +568,16 @@
   });
 
   // ---------- Settings UI ----------
-  function applyMirror() { body.classList.toggle('mirror', !!settings.mirror); }
+  function applyMirror() { body.classList.toggle('mirror', isFront() && !!settings.mirror); }
+
+  flipBtn.addEventListener('click', async () => {
+    if (session) return;
+    settings.facing = isFront() ? 'environment' : 'user';
+    saveSettings();
+    applyMirror();
+    const ok = await startCamera();
+    if (ok) toast(isFront() ? 'Front camera' : 'Back camera');
+  });
 
   function renderSettings() {
     document.querySelectorAll('.row[data-key]').forEach((row) => {
@@ -509,8 +601,6 @@
     // Slow-mo speed only matters when slow-mo is on.
     const speedRow = document.querySelector('.seg[data-key=slowSpeed]').closest('.row');
     speedRow.style.opacity = settings.slowmo === 'off' ? '0.4' : '1';
-    // Suggest 60 fps for the club head trace.
-    $('fpsNote').classList.toggle('hidden', !(settings.traceClub && Number(settings.fps) !== 60));
     renderAccount();
   }
 
@@ -560,13 +650,9 @@
       saveSettings();
       applyMirror();
       renderSettings();
-      if ((input.dataset.key === 'traceHands' || input.dataset.key === 'traceClub') && input.checked) {
-        tracer.prepare().catch(() => toast('Couldn\'t load the swing tracer. Check your internet.', 'err', 3500));
-      }
     });
   });
 
-  $('use60').addEventListener('click', () => setSetting('fps', 60));
 
   $('accountBtn').addEventListener('click', async () => {
     if (cloud.signedIn) {
@@ -581,7 +667,7 @@
 
   $('resetBtn').addEventListener('click', () => {
     if (settings.quality !== DEFAULTS.quality || settings.fps !== DEFAULTS.fps) cameraDirty = true;
-    settings = { ...DEFAULTS };
+    settings = { ...DEFAULTS, facing: settings.facing };
     saveSettings();
     renderSettings();
     applyMirror();
@@ -615,7 +701,9 @@
       toast(`Sign-in failed: ${redirect.message}`, 'err', 5000);
     }
   }
-  if (traceOn()) tracer.prepare().catch(() => {});
+  updateTraceBtn();
+  // Load the tracer in the background so it's ready for the first swing.
+  setTimeout(() => tracer.prepare().catch(() => {}), 1500);
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {

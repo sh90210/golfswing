@@ -124,7 +124,7 @@
   function pad(n) { return String(n).padStart(2, '0'); }
 
   // Upload video + thumbnail, then add the table row.
-  async function saveSwing({ video, thumb, recordedAt, durationMs, trace }) {
+  async function saveSwing({ video, thumb, recordedAt, durationMs, trace, facing }) {
     if (!session) throw authError();
     const d = recordedAt;
     const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -157,9 +157,18 @@
         size_bytes: video.size + (thumb ? thumb.size : 0),
         mime_type: video.type || 'video/webm',
         trace: trace || null,
+        facing: facing === 'environment' ? 'environment' : 'user',
       }),
     });
     return rows[0];
+  }
+
+  async function updateSwing(id, patch) {
+    await api(`/rest/v1/swings?id=eq.${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+      body: JSON.stringify(patch),
+    });
   }
 
   async function listSwings() {
@@ -205,6 +214,7 @@
     get signedIn() { return !!session; },
     onChange(fn) { listeners.add(fn); },
     saveSwing,
+    updateSwing,
     listSwings,
     latestSwing,
     signUrls,
