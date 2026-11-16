@@ -255,7 +255,7 @@
     pTraceBtn.setAttribute('aria-pressed', String(on));
     const r = rows[current];
     if (tracing && r && tracing.row === r) pTraceLabel.textContent = `Tracing ${Math.round(tracing.progress * 100)}%`;
-    else if (r && r.traceFailed) pTraceLabel.textContent = 'No trace';
+    else if (r && r.traceFailed) pTraceLabel.textContent = r.traceError || 'No trace';
     else pTraceLabel.textContent = on ? 'Trace on' : 'Trace off';
   }
 
@@ -278,9 +278,10 @@
       if (trace) {
         r.trace = trace;
         cloud().updateSwing(r.id, { trace }).catch(() => {});
-      } else if (!playerEl.classList.contains('hidden')) r.traceFailed = true;
+      } else if (!playerEl.classList.contains('hidden')) { r.traceFailed = true; r.traceError = tracer().lastError; }
     } catch (_) {
       r.traceFailed = true;
+      r.traceError = 'Tracer didn\'t load';
     } finally {
       tracing = null;
       if (rows[current] === r && !playerEl.classList.contains('hidden')) startTrace(r);

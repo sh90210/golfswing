@@ -53,6 +53,9 @@
 
   // For tests: plug in a fake pose source. It may read GS.tracer.currentT.
   let currentT = 0;
+  let lastTs = 0;            // MediaPipe needs every timestamp to be later than the last
+  let lastError = '';
+  const nextTs = () => { lastTs = Math.max(Math.floor(performance.now()), lastTs + 1); return lastTs; };
   function _setPose(p) { pose = p; posePromise = Promise.resolve(p); }
 
   // ---------- Small helpers ----------
@@ -166,12 +169,12 @@
   // ---------- Frame-by-frame analysis of a recorded clip ----------
   // opts: { fps, durationSec, onProgress(fraction), isCancelled() }
   async function analyzeClip(blob, opts = {}) {
+    lastError = '';
     if (!pose) await prepare();
     const url = URL.createObjectURL(blob);
     const v = document.createElement('video');
     v.muted = true; v.playsInline = true; v.preload = 'auto';
     v.src = url;
-    let tsBump = 0;
     try {
       await once(v, 'loadedmetadata', 8000);
       let dur = v.duration;
@@ -187,9 +190,25 @@
       canvas.width = W; canvas.height = H;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       const fps = Math.min(60, Math.max(15, opts.fps || 30));
-      const base = performance.now();
       const cancelled = () => opts.isCancelled && opts.isCancelled();
 
+      // If the model misses the body in a frame, borrow the hands from the quick scan.
+      let coarseRef = null;
+      const borrowPose = (t) => {
+        if (!coarseRef) return null;
+        const pts = coarseRef.filter((f) => f.P);
+        if (pts.length < 2) return null;
+        let a = pts[0], b = pts[pts.length - 1];
+        for (let i = 0; i < pts.length - 1; i++) if (pts[i].t <= t && pts[i + 1].t >= t) { a = pts[i]; b = pts[i + 1]; break; }
+        const u = b.t === a.t ? 0 : Math.min(1, Math.max(0, (t - a.t) / (b.t - a.t)));
+        return {
+          hx: a.P.hx + (b.P.hx - a.P.hx) * u,
+          hy: a.P.hy + (b.P.hy - a.P.hy) * u,
+          S: a.P.S || b.P.S,
+          elbows: u < 0.5 ? a.P.elbows : b.P.elbows,
+          borrowed: true,
+        };
+      };
       const measure = async (t, prevGray, swinging) => {
         v.currentTime = Math.min(t, Math.max(0, dur - 0.001));
         await once(v, 'seeked', 1500);
@@ -198,10 +217,10 @@
         let lm = null;
         currentT = t;
         try {
-          const res = pose.detectForVideo(canvas, base + t * 1000 + (++tsBump));
+          const res = pose.detectForVideo(canvas, nextTs());
           lm = res && res.landmarks && res.landmarks[0];
         } catch (_) {}
-        const P = readPose(lm, W, H);
+        const P = readPose(lm, W, H) || borrowPose(t);
         const f = { t, P, gray };
         if (P && P.S > 8) Object.assign(f, scoreDirections(gray, prevGray, W, H, P, swinging));
         return f;
@@ -218,8 +237,11 @@
         coarse.push(f);
         if (opts.onProgress) opts.onProgress(0.3 * (i + 1) / coarseTimes.length);
       }
+      const seen = coarse.filter((f) => f.P).length;
+      if (seen < 5) { lastError = 'nobody'; return null; }
       const win = findSwingWindow(coarse);
-      if (!win) return null;
+      if (!win) { lastError = 'noswing'; return null; }
+      coarseRef = coarse;
 
       // Calibrate the club at address from the still frames before the takeaway.
       const calib = calibrate(coarse.filter((f) => f.t < win.start && f.cum));
@@ -238,7 +260,9 @@
         fine.push(f);
         if (opts.onProgress) opts.onProgress(0.3 + 0.7 * (i + 1) / (n + 1));
       }
-      return solve(fine, calib, W, H, win);
+      const out = solve(fine, calib, W, H, win);
+      if (!out) lastError = 'short';
+      return out;
     } finally {
       v.removeAttribute('src');
       v.load();
@@ -563,6 +587,10 @@
     prepare,
     get ready() { return !!pose; },
     get currentT() { return currentT; },
+    // Why the last trace failed, in plain words (for the button label).
+    get lastError() {
+      return { nobody: 'Body not found', noswing: 'No swing found', short: 'No trace' }[lastError] || '';
+    },
     startSampler,
     analyzeClip,
     attach,

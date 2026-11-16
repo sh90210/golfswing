@@ -312,7 +312,7 @@
     traceBtn.setAttribute('aria-pressed', String(!!settings.traceOn));
     const label = traceBtn.querySelector('span');
     if (clip && clip.tracing) label.textContent = `Tracing ${Math.round((clip.progress || 0) * 100)}%`;
-    else if (clip && clip.traceDone && !clip.trace) label.textContent = 'No trace';
+    else if (clip && clip.traceDone && !clip.trace) label.textContent = clip.traceError || 'No trace';
     else label.textContent = settings.traceOn ? 'Trace on' : 'Trace off';
   }
 
@@ -341,6 +341,7 @@
       isCancelled: () => c.cancelled,
     }).then((trace) => {
       c.trace = trace || null;
+      if (!trace) c.traceError = tracer.lastError;
     }).catch(() => {
       c.trace = null;
       if (!tracerWarned) {
