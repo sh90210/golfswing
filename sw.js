@@ -1,5 +1,5 @@
 // Offline cache for the app shell. Bump VERSION when files change.
-const VERSION = 'golfswing-v5';
+const VERSION = 'golfswing-v6';
 const FILES = [
   './',
   './index.html',

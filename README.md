@@ -17,11 +17,12 @@ A simple web app (PWA) for the driving range: set your phone up, tap start, and 
 
 - Plain HTML/CSS/JavaScript, no build step. Hosted on GitHub Pages from `main`.
 - `app.js`: camera, record/replay loop, settings
-- `tracer.js`: club-head tracer. After recording, steps through the clip frame by frame:
-  MediaPipe Pose (hidden, loaded from jsDelivr on first use) finds the hands; the shaft is found as a thin
-  moving line out of the hands; a Viterbi search over (direction, visible length) picks the smoothest
-  consistent club-head path, pinned to the address position before takeaway and at impact, with the
-  backswing path guiding the blurred downswing
+- `tracer.js`: club-head tracer. After recording, the clip is played through once at half speed.
+  MediaPipe Pose (hidden, loaded from jsDelivr on first use) finds the hands and the swing timing.
+  The camera must be still: a median background is subtracted, the thick part (the golfer) is
+  removed, and the far end of the thin piece reaching out from the hands is the club head.
+  A dynamic-programming pass picks one sighting per frame, anchored at the address position at
+  impact, with the backswing path guiding the downswing where the club is a blur.
 - `gallery.js`: gallery and player
 - `supabase.js`: tiny Supabase client (GitHub sign-in, storage, `swings` table)
 

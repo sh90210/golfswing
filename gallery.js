@@ -213,7 +213,7 @@
     startTrace(r);
     try { await pVideo.play(); } catch (_) {}
     // Swings saved before the new tracer (or without a trace) get traced now, once.
-    if (!(r.trace && r.trace.v === 3)) retrace(r, blobForTrace);
+    if (!(r.trace && r.trace.v === 4)) retrace(r, blobForTrace);
     pVideo.playbackRate = rate;
     updatePlayIcon();
   }
@@ -244,7 +244,7 @@
 
   function startTrace(r) {
     stopTrace();
-    if (r && r.trace && r.trace.v === 3 && getSettings().traceOn) detachTrace = tracer().attach(pTrace, pVideo, r.trace);
+    if (r && r.trace && r.trace.v === 4 && getSettings().traceOn) detachTrace = tracer().attach(pTrace, pVideo, r.trace);
     updateTraceLabel();
   }
   function stopTrace() { if (detachTrace) { detachTrace(); detachTrace = null; } }
