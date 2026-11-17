@@ -455,8 +455,15 @@
     const speed = hs.map((p, i) => (i === 0 ? 0 : Math.hypot(p[0] - hs[i - 1][0], p[1] - hs[i - 1][1])));
     let iMax = 1;
     for (let i = 1; i < F; i++) if (hs[i][1] - hs[i - 1][1] > hs[iMax][1] - hs[iMax - 1][1]) iMax = i; // fastest downward
-    let iTop = 0;
-    for (let i = 0; i <= iMax; i++) if (hs[i][1] < hs[iTop][1]) iTop = i;
+    let iHigh = 0;
+    for (let i = 0; i <= iMax; i++) if (hs[i][1] < hs[iHigh][1]) iHigh = i;
+    // The club keeps going back while the hands pause at the top, and only turns when the
+    // hands start down. So the top is the END of that pause, not the first highest moment.
+    let iTop = iHigh;
+    for (let i = iHigh; i < iMax; i++) {
+      if (hs[i][1] - hs[iHigh][1] <= 0.08 * S && Math.hypot(hs[i][0] - hs[iHigh][0], hs[i][1] - hs[iHigh][1]) <= 0.12 * S) iTop = i;
+      else break;
+    }
     let iImp = iMax;
     for (let i = iMax; i < F && frames[i].t - frames[iMax].t <= 0.2; i++) if (hs[i][1] > hs[iImp][1]) iImp = i;
 
@@ -543,20 +550,27 @@
     const ks = [...chosen.keys()].sort((a, b) => a - b);
     if (ks.length < 4) return null;
 
-    // 7. Join the sightings into one path and smooth lightly.
+    // 7. Join the sightings into one path.
+    // Where the club wasn't seen, it moves in step WITH THE HANDS: progress along the gap
+    // follows how far the hands have travelled, not the clock. So the head holds still
+    // while the hands pause at the top, and sweeps when they move.
+    const handTravel = [0];
+    for (let i = 1; i < F; i++) handTravel.push(handTravel[i - 1] + Math.hypot(hs[i][0] - hs[i - 1][0], hs[i][1] - hs[i - 1][1]));
     const raw = [];
     for (let k = ks[0], n = 0; k <= ks[ks.length - 1]; k++) {
       if (chosen.has(k)) { raw.push([chosen.get(k).x, chosen.get(k).y]); continue; }
       while (ks[n + 1] < k) n++;
-      const a = ks[n], b = ks[n + 1], u = (k - a) / (b - a);
+      const a = ks[n], b = ks[n + 1];
       const A = chosen.get(a), B = chosen.get(b);
+      const travel = handTravel[b] - handTravel[a];
+      const u = travel > 0.05 * S ? (handTravel[k] - handTravel[a]) / travel : (k - a) / (b - a);
       raw.push([A.x + (B.x - A.x) * u, A.y + (B.y - A.y) * u]);
     }
     const sm = raw.map((p, i) => (i === 0 || i === raw.length - 1 ? p
       : [(raw[i - 1][0] + 2 * p[0] + raw[i + 1][0]) / 4, (raw[i - 1][1] + 2 * p[1] + raw[i + 1][1]) / 4]));
     const club = sm.map((p, n) => [round(frames[ks[0] + n].t), round(p[0] / W), round(p[1] / H)]);
     return {
-      v: 4,
+      v: 5,
       start: club[0][0],
       top: round(frames[Math.max(iTop, ks[0])].t),
       impact: round(frames[iImp].t),
@@ -639,7 +653,7 @@
 
   // Keep a canvas overlay in sync with a playing video. Returns a detach function.
   function attach(canvas, video, trace) {
-    if (!trace || trace.v !== 4) return () => {};
+    if (!trace || trace.v !== 5) return () => {};
     let raf = 0, alive = true;
     const tick = () => {
       if (!alive) return;
@@ -664,7 +678,7 @@
     c.width = pick.canvas.width; c.height = pick.canvas.height;
     const ctx = c.getContext('2d');
     ctx.drawImage(pick.canvas, 0, 0);
-    if (trace && withTrace && trace.v === 4) drawClub(ctx, trace, { x: 0, y: 0, w: c.width, h: c.height }, Infinity, 2.5, 1);
+    if (trace && withTrace && trace.v === 5) drawClub(ctx, trace, { x: 0, y: 0, w: c.width, h: c.height }, Infinity, 2.5, 1);
     return new Promise((res) => c.toBlob((b) => res(b), 'image/jpeg', 0.78));
   }
 
