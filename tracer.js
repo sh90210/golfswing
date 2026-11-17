@@ -119,7 +119,9 @@
       S = Math.max(S, 0.28 * height);
     }
     const elbows = [13, 14].map((i) => lm[i]).filter(visible).map((p) => ({ x: p.x * W, y: p.y * H }));
-    return { hx, hy, S, elbows };
+    // Shoulders (middle) — the lead arm swings from here.
+    const sx = sh ? sh.x : hx, sy = sh ? sh.y : hy - S;
+    return { hx, hy, S, elbows, sx, sy };
   }
 
   // ---------- Analysis of a recorded clip ----------
@@ -210,7 +212,10 @@
         if (t <= poses[0].t) b = a;
         if (t >= poses[poses.length - 1].t) a = b;
         const u = b.t === a.t ? 0 : (t - a.t) / (b.t - a.t);
-        return { hx: a.P.hx + (b.P.hx - a.P.hx) * u, hy: a.P.hy + (b.P.hy - a.P.hy) * u, S: a.P.S };
+        return {
+          hx: a.P.hx + (b.P.hx - a.P.hx) * u, hy: a.P.hy + (b.P.hy - a.P.hy) * u, S: a.P.S,
+          sx: a.P.sx + (b.P.sx - a.P.sx) * u, sy: a.P.sy + (b.P.sy - a.P.sy) * u,
+        };
       };
       const fine = frames.filter((f) => f.t >= t0 && f.t <= t1);
       frames.length = 0;
@@ -344,6 +349,20 @@
     });
     const S = median(frames.filter((f) => f.P && f.P.S > 0).map((f) => f.P.S)) || win.S;
     const odd = (v) => Math.max(3, Math.round(v) | 1);
+    const handTravel = [0];
+    for (let i = 1; i < F; i++) handTravel.push(handTravel[i - 1] + Math.hypot(hs[i][0] - hs[i - 1][0], hs[i][1] - hs[i - 1][1]));
+    // Where the club head is on the way down when it can't be seen, between sighting A
+    // (frame a, near the top) and B (frame b, at the ball). Filmed from behind, the head first
+    // drops almost straight down behind the golfer (the wrists stay cocked, "lag") and only
+    // swings out toward the ball late, as the wrists release. So: down early, out late.
+    // Progress follows how far the hands have travelled, not the clock.
+    const lagHead = (k, a, A, b, B) => {
+      const travel = handTravel[b] - handTravel[a];
+      const u = travel > 0.05 * S ? (handTravel[k] - handTravel[a]) / travel : (k - a) / Math.max(1, b - a);
+      const across = u * u * u;          // sideways toward the ball: late
+      const down = 1 - (1 - u) * (1 - u); // dropping: early
+      return [A.x + (B.x - A.x) * across, A.y + (B.y - A.y) * down];
+    };
 
     // 1. Background = per-pixel median of frames spread across the swing.
     const step = Math.max(1, Math.round(F / 21));
@@ -429,6 +448,24 @@
             if (body[q] || persist[q]) { hug = true; break; }
           }
         }
+        // A real club head is joined to the hands by the shaft: most of the straight line
+        // between them must be the moving shaft or the golfer. A flickering light or a
+        // reflection on the far side of the room isn't joined to anything.
+        let on = 0, tot = 0;
+        for (let q = 0.12; q <= 0.9; q += 0.04) {
+          const lx = Math.round(hx + (sx / n - hx) * q), ly = Math.round(hy + (sy / n - hy) * q);
+          if (lx < 0 || ly < 0 || lx >= W || ly >= H) continue;
+          tot++;
+          let hit = false;
+          for (let dy = -2; dy <= 2 && !hit; dy++) for (let dx = -2; dx <= 2 && !hit; dx++) {
+            const xx = lx + dx, yy = ly + dy;
+            if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+            const qq = yy * W + xx;
+            if (fg[qq] || body[qq]) hit = true;
+          }
+          if (hit) on++;
+        }
+        if (tot && on / tot < 0.55) continue;
         out.push({ x: sx / n, y: sy / n, far, ext: far - near, hug });
       }
       out.sort((a, b) => b.ext - a.ext);
@@ -523,26 +560,20 @@
     };
     let chosen = runDP(null);
     if (!chosen) return null;
-    // Second pass: on the way down, the club head comes back close to the path it took
-    // on the way up. Use the backswing path to reject look-alikes during the downswing.
+    // Second pass: on the way down, prefer sightings close to where the lagging club
+    // should be (see lagHead). Look-alikes along the shoulder line are rejected.
     {
-      const up = [...chosen.keys()].filter((k) => k <= iTop).sort((x, y) => x - y).map((k) => chosen.get(k));
-      if (up.length >= 4 && iBall > iTop + 1) {
-        const distToPath = (c) => {
-          let best = Infinity;
-          for (let i = 0; i < up.length - 1; i++) {
-            const ax = up[i].x, ay = up[i].y, bx = up[i + 1].x, by = up[i + 1].y;
-            const vx = bx - ax, vy = by - ay, len2 = vx * vx + vy * vy || 1;
-            const u = Math.max(0, Math.min(1, ((c.x - ax) * vx + (c.y - ay) * vy) / len2));
-            const d = Math.hypot(c.x - (ax + vx * u), c.y - (ay + vy * u));
-            if (d < best) best = d;
-          }
-          return best;
-        };
+      const before = [...chosen.keys()].filter((k) => k <= iTop).sort((x, y) => x - y);
+      const ball = C[iBall] && C[iBall].find((c) => c.pseudo);
+      if (before.length && ball && iBall > iTop + 1) {
+        const a0 = before[before.length - 1], A0 = chosen.get(a0);
+        const first = chosen;
         const again = runDP((k, c) => {
-          if (k <= iTop || k >= iBall || c.pseudo) return 0;
-          const d = distToPath(c) / (0.3 * L);
-          return Math.min(2.5, d * d);
+          if (k <= iTop) return first.get(k) === c ? 0 : 3; // keep the backswing exactly as found
+          if (k >= iBall || c.pseudo) return 0;
+          const pr = lagHead(k, Math.max(a0, iTop), A0, iBall, ball);
+          const d = Math.hypot(c.x - pr[0], c.y - pr[1]) / (0.35 * L);
+          return Math.min(2.5, 0.6 * d * d);
         });
         if (again) chosen = again;
       }
@@ -554,14 +585,18 @@
     // Where the club wasn't seen, it moves in step WITH THE HANDS: progress along the gap
     // follows how far the hands have travelled, not the clock. So the head holds still
     // while the hands pause at the top, and sweeps when they move.
-    const handTravel = [0];
-    for (let i = 1; i < F; i++) handTravel.push(handTravel[i - 1] + Math.hypot(hs[i][0] - hs[i - 1][0], hs[i][1] - hs[i - 1][1]));
     const raw = [];
     for (let k = ks[0], n = 0; k <= ks[ks.length - 1]; k++) {
       if (chosen.has(k)) { raw.push([chosen.get(k).x, chosen.get(k).y]); continue; }
       while (ks[n + 1] < k) n++;
       const a = ks[n], b = ks[n + 1];
       const A = chosen.get(a), B = chosen.get(b);
+      if (b > iTop && a < iBall) {
+        // Hold at the top until the downswing starts, then drop down and swing out.
+        const a2 = Math.max(a, iTop);
+        raw.push(k <= a2 ? [A.x, A.y] : lagHead(k, a2, A, b, B));
+        continue;
+      }
       const travel = handTravel[b] - handTravel[a];
       const u = travel > 0.05 * S ? (handTravel[k] - handTravel[a]) / travel : (k - a) / (b - a);
       raw.push([A.x + (B.x - A.x) * u, A.y + (B.y - A.y) * u]);
@@ -570,7 +605,7 @@
       : [(raw[i - 1][0] + 2 * p[0] + raw[i + 1][0]) / 4, (raw[i - 1][1] + 2 * p[1] + raw[i + 1][1]) / 4]));
     const club = sm.map((p, n) => [round(frames[ks[0] + n].t), round(p[0] / W), round(p[1] / H)]);
     return {
-      v: 5,
+      v: 6,
       start: club[0][0],
       top: round(frames[Math.max(iTop, ks[0])].t),
       impact: round(frames[iImp].t),
@@ -653,7 +688,7 @@
 
   // Keep a canvas overlay in sync with a playing video. Returns a detach function.
   function attach(canvas, video, trace) {
-    if (!trace || trace.v !== 5) return () => {};
+    if (!trace || trace.v !== 6) return () => {};
     let raf = 0, alive = true;
     const tick = () => {
       if (!alive) return;
@@ -678,7 +713,7 @@
     c.width = pick.canvas.width; c.height = pick.canvas.height;
     const ctx = c.getContext('2d');
     ctx.drawImage(pick.canvas, 0, 0);
-    if (trace && withTrace && trace.v === 5) drawClub(ctx, trace, { x: 0, y: 0, w: c.width, h: c.height }, Infinity, 2.5, 1);
+    if (trace && withTrace && trace.v === 6) drawClub(ctx, trace, { x: 0, y: 0, w: c.width, h: c.height }, Infinity, 2.5, 1);
     return new Promise((res) => c.toBlob((b) => res(b), 'image/jpeg', 0.78));
   }
 
